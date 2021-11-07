@@ -13,67 +13,64 @@ def create_crop():
     pcd = o3d.io.read_point_cloud(PATH)  
     o3d.visualization.draw_geometries_with_editing([pcd])
 
+def display_inlier_outlier(cloud, ind):
+    inlier_cloud = cloud.select_by_index(ind)
+    outlier_cloud = cloud.select_by_index(ind, invert=True)
 
-PATH = "./data/0000000000.pcd"
-pcd = o3d.io.read_point_cloud(PATH)
-print(pcd)
+    print("Showing outliers (red) and inliers (gray): ")
+    outlier_cloud.paint_uniform_color([1, 0, 0])
+    inlier_cloud.paint_uniform_color([0.8, 0.8, 0.8])
+    o3d.visualization.draw_geometries([inlier_cloud, outlier_cloud], zoom=0.2, front=[0, 0, 1], lookat=[1.5, -2, 0.2], up=[0, 1, 0])
 
-#-----------#
-# Filtering #
-#-----------#
-# – Downsampling
-downsampled_pcd = pcd.voxel_down_sample(voxel_size=0.1)
-print(downsampled_pcd)
+if __name__ =="__main__":
+    PATH = "./data/0000000000.pcd"
+    pcd = o3d.io.read_point_cloud(PATH)
 
-# – Cropping
-#create_crop()
-vol = o3d.visualization.read_selection_polygon_volume("crop.json")
-cropped_pcd = vol.crop_point_cloud(downsampled_pcd)
-print(cropped_pcd)
+    #-----------#
+    # Filtering #
+    #-----------#
+    # – Downsampling
+    downsampled_pcd = pcd.voxel_down_sample(voxel_size=0.1)
 
-#Remove statistical outliers
-cl, ind = cropped_pcd.remove_statistical_outlier(nb_neighbors=10, std_ratio=2.0)
-removed_stats_outliers_pcd = cropped_pcd.select_by_index(ind);
+    # – Cropping
+    vol = o3d.visualization.read_selection_polygon_volume("z-crop.json")
+    cropped_pcd = vol.crop_point_cloud(downsampled_pcd)
 
-#Remove radius outliers
-cl, ind = removed_stats_outliers_pcd.remove_radius_outlier(nb_points=16, radius=0.05)
-removed_radius_outliers_pcd = removed_stats_outliers_pcd.select_by_index(ind);
-removed_radius_outliers_pcd.paint_uniform_color([0, 1.0, 0])
-not_removed_radius_outliers_pcd = removed_stats_outliers_pcd.select_by_index(ind, invert=True);
-not_removed_radius_outliers_pcd.paint_uniform_color([1.0, 0, 0])
-o3d.visualization.draw_geometries([not_removed_radius_outliers_pcd], zoom=0.1, front=[0, 0, 1], lookat=[1.5, -2, 0.2], up=[0, 1, 0])
+    #Remove statistical outliers
+    cl, ind = cropped_pcd.remove_statistical_outlier(nb_neighbors=200, std_ratio=1.3)
+    statistical_inliers = cropped_pcd.select_by_index(ind)
 
-#--------------#
-# Segmentation #
-#--------------#
+    #Remove radius outliers
+    cl, ind = statistical_inliers.remove_radius_outlier(nb_points=12, radius=1.5)
+    radial_inliers = statistical_inliers.select_by_index(ind)
 
+    #--------------#
+    # Segmentation #
+    #--------------#
+    plane_model, inliers = radial_inliers.segment_plane(distance_threshold=0.25,
+                                            ransac_n=250,
+                                            num_iterations=2000)
+    [a, b, c, d] = plane_model
+    print(f"Plane equation: {a:.2f}x + {b:.2f}y + {c:.2f}z + {d:.2f} = 0")
 
-plane_model, inliers = cropped_pcd.segment_plane(distance_threshold=0.2,
-                                         ransac_n=3,
-                                         num_iterations=2000)
-[a, b, c, d] = plane_model
-print(f"Plane equation: {a:.2f}x + {b:.2f}y + {c:.2f}z + {d:.2f} = 0")
+    road_cloud = radial_inliers.select_by_index(inliers)
+    road_cloud.paint_uniform_color([1.0, 0, 0])
+    object_cloud = radial_inliers.select_by_index(inliers, invert=True)
+    object_cloud.paint_uniform_color([0, 1.0, 0])
 
-inlier_cloud = pcd.select_by_index(inliers)
-inlier_cloud.paint_uniform_color([0, 1.0, 0])
-outlier_cloud = pcd.select_by_index(inliers, invert=True)
+    #------------#
+    # Clustering #
+    #------------#
+    with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug) as cm:
+        labels = np.array(object_cloud.cluster_dbscan(eps=0.75, min_points=20, print_progress=True))
 
-#------------#
-# Clustering #
-#------------#
-with o3d.utility.VerbosityContextManager(o3d.utility.VerbosityLevel.Debug) as cm:
-    labels = np.array(outlier_cloud.cluster_dbscan(eps=1.2, min_points=30, print_progress=True))
+    max_label = labels.max()
+    print(f"point cloud has {max_label + 1} clusters")
+    colors = plt.get_cmap("tab20")(labels / (max_label if max_label > 0 else 1))
+    colors[labels < 0] = 0
+    object_cloud.colors = o3d.utility.Vector3dVector(colors[:, :3])
 
-max_label = labels.max()
-print(f"point cloud has {max_label + 1} clusters")
-colors = plt.get_cmap("tab20")(labels / (max_label if max_label > 0 else 1))
-colors[labels < 0] = 0
-outlier_cloud.colors = o3d.utility.Vector3dVector(colors[:, :3])
-
-#------------------------#
-# Visualise the PCD file #
-#------------------------#
-#o3d.visualization.draw_geometries([pcd])
-o3d.visualization.draw_geometries([outlier_cloud], zoom=0.1, front=[0, 0, 1], lookat=[1.5, -2, 0.2], up=[0, 1, 0])
-
-
+    #------------------------#
+    # Visualise the PCD file #
+    #------------------------#
+    o3d.visualization.draw_geometries([object_cloud], zoom=0.1, front=[0, 0, 1], lookat=[1.5, -2, 0.2], up=[0, 1, 0])
